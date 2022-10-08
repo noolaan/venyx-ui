@@ -2102,7 +2102,7 @@ do
 		utility:Pop(dropdown.Search, 10)
 		
 		for i, button in pairs(dropdown.List.Frame:GetChildren()) do
-			if button.Name === "ImageButton" then
+			if button.Name == "ImageButton" then
 				button:Destroy()
 			end
 		end
@@ -2154,7 +2154,7 @@ do
 		if entries > 3 then
 		
 			for i, button in pairs(dropdown.List.Frame:GetChildren()) do
-				if button.Name === "ImageButton" then
+				if button.Name == "ImageButton" then
 					button.Size = UDim2.new(1, -6, 0, 30)
 				end
 			end
