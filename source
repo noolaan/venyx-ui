@@ -70,8 +70,9 @@ do
 		clone.Size = clone.Size - UDim2.new(0, shrink, 0, shrink)
 		clone.Position = UDim2.new(0.5, 0, 0.5, 0)
 		
+		-- Make ALL clones non-interactive, always
+		clone.Active = false
 		if clone:IsA("GuiButton") then
-			clone.Active = false
 			clone.AutoButtonColor = false
 		end
 		
@@ -81,11 +82,11 @@ do
 		object.ImageTransparency = 1
 		utility:Tween(clone, {Size = object.Size}, 0.2)
 		
-		spawn(function()
-			wait(0.2)
-		
-			object.ImageTransparency = 0
-			clone:Destroy()
+		task.delay(0.2, function()
+			if clone and clone.Parent then
+				object.ImageTransparency = 0
+				clone:Destroy()
+			end
 		end)
 		
 		return clone
@@ -579,8 +580,17 @@ do
 				Image = "rbxassetid://5012538583",
 				ImageColor3 = themes.TextColor,
 				ZIndex = 4
+			}),
+			utility:Create("Sound", {
+				Name = "NotificationSound",
+				SoundId = "rbxassetid://2492647689",
+				Volume = 0.5,
+				PlayOnRemove = false
 			})
 		});
+
+		-- Sound playing
+		notification.NotificationSound:Play()
 		
 		-- dragging
 		utility:DraggingEnabled(notification)
@@ -747,10 +757,19 @@ do
                 Image = "rbxassetid://5012538583",
                 ImageColor3 = themes.TextColor,
                 ZIndex = 4
-            })
+            }),
+			utility:Create("Sound", {
+				Name = "NotificationSound",
+				SoundId = "rbxassetid://2492647689",
+				Volume = 0.5,
+				PlayOnRemove = false
+			})
         });
 
-        		-- dragging
+		-- Sound playing
+		notification.NotificationSound:Play()
+
+        -- dragging
 		utility:DraggingEnabled(notification)
 		
 		-- position and size
