@@ -70,6 +70,11 @@ do
 		clone.Size = clone.Size - UDim2.new(0, shrink, 0, shrink)
 		clone.Position = UDim2.new(0.5, 0, 0.5, 0)
 		
+		if clone:IsA("GuiButton") then
+			clone.Active = false
+			clone.AutoButtonColor = false
+		end
+		
 		clone.Parent = object
 		clone:ClearAllChildren()
 		
