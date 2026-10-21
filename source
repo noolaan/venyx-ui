@@ -195,6 +195,20 @@ do
 
 	end
 	
+	-- The combined UIScale over an instance (its own and its ancestors'). AbsoluteSize is in screen pixels, already
+	-- scaled; divide by this before writing it back into an offset Size, or the UIScale applies twice.
+	function utility:GetScale(instance)
+		local scale = 1
+		while instance do
+			local uiScale = instance:FindFirstChildOfClass("UIScale")
+			if uiScale then
+				scale = scale * uiScale.Scale
+			end
+			instance = instance.Parent
+		end
+		return scale
+	end
+
 	-- Drag `grip` to resize `frame` (offset sizes). Mouse movement is divided by the frame's UIScale, if it has one,
 	-- so the corner stays under the mouse at any scale.
 	function utility:ResizingEnabled(grip, frame, minSize)
@@ -2361,13 +2375,14 @@ do
 	function page:Resize(scroll)
 		local padding = 10
 		local size = 0
-		
+		local scale = utility:GetScale(self.container)
+
 		for i, section in pairs(self.sections) do
-			size = size + section.container.Parent.AbsoluteSize.Y + padding
+			size = size + section.container.Parent.AbsoluteSize.Y / scale + padding
 		end
-		
+
 		self.container.CanvasSize = UDim2.new(0, 0, 0, size)
-		self.container.ScrollBarImageTransparency = size > self.container.AbsoluteSize.Y
+		self.container.ScrollBarImageTransparency = size > self.container.AbsoluteSize.Y / scale
 		
 		if scroll then
 			utility:Tween(self.container, {CanvasPosition = Vector2.new(0, self.lastPosition or 0)}, 0.2)
@@ -2381,10 +2396,11 @@ do
 		end
 		
 		local padding = 4
-		local size = (4 * padding) + self.container.Title.AbsoluteSize.Y -- offset
-		
+		local scale = utility:GetScale(self.container)
+		local size = (4 * padding) + self.container.Title.AbsoluteSize.Y / scale -- offset
+
 		for i, module in pairs(self.modules) do
-			size = size + module.AbsoluteSize.Y + padding
+			size = size + module.AbsoluteSize.Y / scale + padding
 		end
 		
 		if smooth then
