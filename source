@@ -55,7 +55,7 @@ do
 		end
 		
 		for i, value in pairs(values) do
-			if tostring(value):lower():find(pattern) then
+			if tostring(value):lower():find(pattern, 1, true) then -- plain: "(" or "[" in a search isn't a pattern
 				table.insert(new, value)
 			end
 		end
@@ -92,24 +92,36 @@ do
 		return clone
 	end
 	
-	function utility:InitializeKeybind()
+	-- These listen on UserInputService, so they'd outlive the window; they're dropped when `container` is destroyed
+	-- (a re-run's old binds kept firing alongside the new ones)
+	function utility:InitializeKeybind(container)
 		self.keybinds = {}
 		self.ended = {}
-		
-		input.InputBegan:Connect(function(key)
+
+		local began = input.InputBegan:Connect(function(key, processed)
+			if processed then -- typing in chat or a textbox
+				return
+			end
 			if self.keybinds[key.KeyCode] then
 				for i, bind in pairs(self.keybinds[key.KeyCode]) do
 					bind()
 				end
 			end
 		end)
-		
-		input.InputEnded:Connect(function(key)
+
+		local ended = input.InputEnded:Connect(function(key)
 			if key.UserInputType == Enum.UserInputType.MouseButton1 then
 				for i, callback in pairs(self.ended) do
 					callback()
 				end
 			end
+		end)
+
+		container.Destroying:Connect(function()
+			began:Disconnect()
+			ended:Disconnect()
+			self.keybinds = {}
+			self.ended = {}
 		end)
 	end
 	
@@ -170,15 +182,57 @@ do
 			end
 		end)
 
-		input.InputChanged:Connect(function(input)
+		-- Global, so it's dropped with the frame (every notification is draggable; these used to pile up forever)
+		local moved = input.InputChanged:Connect(function(input)
 			if input == dragInput and dragging then
 				local delta = input.Position - mousePos
 				parent.Position  = UDim2.new(framePos.X.Scale, framePos.X.Offset + delta.X, framePos.Y.Scale, framePos.Y.Offset + delta.Y)
 			end
 		end)
+		frame.Destroying:Connect(function()
+			moved:Disconnect()
+		end)
 
 	end
 	
+	-- Drag `grip` to resize `frame` (offset sizes). Mouse movement is divided by the frame's UIScale, if it has one,
+	-- so the corner stays under the mouse at any scale.
+	function utility:ResizingEnabled(grip, frame, minSize)
+		local resizing = false
+		local startMouse, startSize
+
+		grip.InputBegan:Connect(function(inputObject)
+			if inputObject.UserInputType == Enum.UserInputType.MouseButton1 then
+				resizing = true
+				startMouse = inputObject.Position
+				startSize = Vector2.new(frame.Size.X.Offset, frame.Size.Y.Offset)
+
+				inputObject.Changed:Connect(function()
+					if inputObject.UserInputState == Enum.UserInputState.End then
+						resizing = false
+					end
+				end)
+			end
+		end)
+
+		local moved
+		moved = input.InputChanged:Connect(function(inputObject)
+			if not grip.Parent then
+				moved:Disconnect()
+				return
+			end
+			if resizing and inputObject.UserInputType == Enum.UserInputType.MouseMovement then
+				local uiScale = frame:FindFirstChildOfClass("UIScale")
+				local scale = uiScale and uiScale.Scale or 1
+				local delta = inputObject.Position - startMouse
+				frame.Size = UDim2.new(
+					0, math.max(minSize.X, startSize.X + delta.X / scale),
+					0, math.max(minSize.Y, startSize.Y + delta.Y / scale)
+				)
+			end
+		end)
+	end
+
 	function utility:DraggingEnded(callback)
 		table.insert(self.ended, callback)
 	end
@@ -283,12 +337,26 @@ do
 						TextSize = 14,
 						TextXAlignment = Enum.TextXAlignment.Left
 					})
+				}),
+				utility:Create("TextButton", { -- drag the bottom-right corner to resize
+					Name = "ResizeGrip",
+					AnchorPoint = Vector2.new(1, 1),
+					BackgroundTransparency = 1,
+					Position = UDim2.new(1, -2, 1, -2),
+					Size = UDim2.new(0, 14, 0, 14),
+					ZIndex = 10,
+					Font = Enum.Font.GothamBold,
+					Text = "◢",
+					TextColor3 = themes.TextColor,
+					TextTransparency = 0.7,
+					TextSize = 12
 				})
 			})
 		})
-		
-		utility:InitializeKeybind()
+
+		utility:InitializeKeybind(container)
 		utility:DraggingEnabled(container.Main.TopBar, container.Main)
+		utility:ResizingEnabled(container.Main.ResizeGrip, container.Main, Vector2.new(400, 300))
 		
 		return setmetatable({
 			container = container,
@@ -469,7 +537,7 @@ do
             if self.position then
                 modal.Modal = true;
                 utility:Tween(container, {
-                    Size = UDim2.new(0, 511, 0, 428),
+                    Size = self.size or UDim2.new(0, 511, 0, 428), -- the size it had before closing (it can be resized)
                     Position = self.position
                 }, 0.2)
                 wait(0.2)
@@ -481,15 +549,16 @@ do
                 self.position = nil
             else
                 self.position = container.Position
+                self.size = container.Size
                 container.ClipsDescendants = true
                 modal.Modal = false;
-                
+
                 utility:Tween(topbar, {Size = UDim2.new(1, 0, 1, 0)}, 0.2)
                 wait(0.2)
-                
+
                 utility:Tween(container, {
-                    Size = UDim2.new(0, 511, 0, 0),
-                    Position = self.position + UDim2.new(0, 0, 0, 428)
+                    Size = UDim2.new(0, self.size.X.Offset, 0, 0),
+                    Position = self.position + UDim2.new(0, 0, 0, self.size.Y.Offset)
                 }, 0.2)
                 wait(0.2)
             end
@@ -502,8 +571,34 @@ do
 	
 	-- new modules
 	
-	function library:Notify(title, text, callback)
-	
+	-- Notify and ImageNotify return right away; the animations run in their own thread (they used to make the caller
+	-- wait up to ~0.6s). One shows at a time, in order, so two at once can't both close the same previous one and
+	-- leave one stuck on screen.
+	local function queueNotification(self, show, ...)
+		local args = table.pack(...)
+		task.spawn(function()
+			while self.notifying do
+				task.wait()
+			end
+			self.notifying = true
+			local ok, err = pcall(show, self, table.unpack(args, 1, args.n))
+			self.notifying = false
+			if not ok then
+				warn("[venyx] notification failed: " .. tostring(err))
+			end
+		end)
+	end
+
+	function library:Notify(...)
+		queueNotification(self, self.showNotification, ...)
+	end
+
+	function library:ImageNotify(...)
+		queueNotification(self, self.showImageNotification, ...)
+	end
+
+	function library:showNotification(title, text, callback)
+
 		-- overwrite last notification
 		if self.activeNotification then
 			self.activeNotification = self.activeNotification()
@@ -671,7 +766,7 @@ do
 		end)
 	end
 
-    function library:ImageNotify(title, text, image, callback)
+    function library:showImageNotification(title, text, image, callback)
 	
         -- overwrite last notification
         if self.activeNotification then
@@ -965,7 +1060,7 @@ do
 		--self:Resize()
 		
 		local active = default
-		self:updateToggle(toggle, nil, active)
+		self:updateToggle(toggle, nil, active, true) -- no animation while building (it cost 0.1s per toggle)
 		
 		toggle.MouseButton1Click:Connect(function()
 			active = not active
@@ -1872,10 +1967,14 @@ do
 			
 			while dragging do
 				utility:Tween(circle, {ImageTransparency = 0}, 0.1)
-				
-				value = self:updateSlider(slider, nil, nil, min, max, value)
-				callback(value)
-				
+
+				-- only when it moves: holding the bar still used to call back every frame
+				local newValue = self:updateSlider(slider, nil, nil, min, max, value)
+				if newValue ~= value then
+					value = newValue
+					callback(value)
+				end
+
 				utility:Wait()
 			end
 			
@@ -1890,17 +1989,22 @@ do
 			end
 		end)
 		
+		-- Only while you're typing in the box. updateSlider writes this box too, so dragging (and any updateSlider call
+		-- from code) used to call back a second time through here.
 		textbox:GetPropertyChangedSignal("Text"):Connect(function()
+			if not textbox:IsFocused() then
+				return
+			end
 			local text = textbox.Text
-			
+
 			if not allowed[text] and not tonumber(text) then
 				textbox.Text = text:sub(1, #text - 1)
-			elseif not allowed[text] then	
+			elseif not allowed[text] then
 				value = self:updateSlider(slider, nil, tonumber(text) or value, min, max)
 				callback(value)
 			end
 		end)
-		
+
 		return slider
 	end
 	
@@ -2314,31 +2418,40 @@ do
 		button.Title.Text = title
 	end
 	
-	function section:updateToggle(toggle, title, value)
+	-- Never yields: the second half of the animation is scheduled instead of waited for, so a click's callback runs
+	-- straight away. instant: jump to the end state (building the menu)
+	function section:updateToggle(toggle, title, value, instant)
 		toggle = self:getModule(toggle)
-		
+
 		local position = {
 			In = UDim2.new(0, 2, 0.5, -6),
 			Out = UDim2.new(0, 20, 0.5, -6)
 		}
-		
+
 		local frame = toggle.Button.Frame
 		value = value and "Out" or "In"
-		
+
 		if title then
 			toggle.Title.Text = title
 		end
-		
+
+		if instant then
+			frame.Size = UDim2.new(1, -22, 1, -4)
+			frame.Position = position[value]
+			return
+		end
+
 		utility:Tween(frame, {
 			Size = UDim2.new(1, -22, 1, -9),
 			Position = position[value] + UDim2.new(0, 0, 0, 2.5)
 		}, 0.2)
-		
-		wait(0.1)
-		utility:Tween(frame, {
-			Size = UDim2.new(1, -22, 1, -4),
-			Position = position[value]
-		}, 0.1)
+
+		task.delay(0.1, function()
+			utility:Tween(frame, {
+				Size = UDim2.new(1, -22, 1, -4),
+				Position = position[value]
+			}, 0.1)
+		end)
 	end
 	
 	function section:updateTextbox(textbox, title, value)
@@ -2600,3 +2713,4 @@ do
 end
 
 return library;
+
