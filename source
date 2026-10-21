@@ -606,7 +606,8 @@ do
 			modules = {},
 			binds = {},
 			dropdowns = {}, -- dropdown -> its state (see createDropdown)
-			sliders = {}, -- slider -> {min, max, step, suffix}
+			sliders = {}, -- slider -> {min, max, step, suffix, value}
+			toggles = {}, -- toggle -> on/off
 		}, section) 
 	end
 	
@@ -1132,11 +1133,11 @@ do
 		
 		table.insert(self.modules, toggle)
 		
-		local active = default
-		self:updateToggle(toggle, nil, active, true) -- no animation while building (it cost 0.1s per toggle)
-		
+		self:updateToggle(toggle, nil, default, true) -- no animation while building (it cost 0.1s per toggle)
+
 		toggle.MouseButton1Click:Connect(function()
-			active = not active
+			-- read back from self.toggles: updateToggle from code (a hotkey) may have flipped it since the last click
+			local active = not self.toggles[toggle]
 			self:updateToggle(toggle, nil, active)
 			
 			if callback then
@@ -2570,6 +2571,7 @@ do
 		}
 
 		local frame = toggle.Button.Frame
+		self.toggles[toggle] = value and true or false
 		value = value and "Out" or "In"
 
 		if title then
