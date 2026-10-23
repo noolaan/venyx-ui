@@ -237,9 +237,10 @@ do
 		ignore = 0.25, -- seconds after a wheel event that Roblox's own jump is undone
 	}
 
-	-- Furthest CanvasPosition.Y, in offsets (the Absolute sizes include UIScale)
+	-- Furthest CanvasPosition.Y. CanvasPosition is in screen pixels, UIScale included, like the Absolute sizes
+	-- (dividing by the scale stopped a 120% menu about a sixth short of the bottom).
 	local function maxScroll(frame)
-		return math.max(0, (frame.AbsoluteCanvasSize.Y - frame.AbsoluteWindowSize.Y) / utility:GetScale(frame))
+		return math.max(0, frame.AbsoluteCanvasSize.Y - frame.AbsoluteWindowSize.Y)
 	end
 
 	-- The mouse is over `frame` where it's actually drawn: inside it and every clipping ancestor (a closed dropdown's
@@ -273,7 +274,8 @@ do
 			state.streak = 0
 		end
 		state.direction, state.notched = direction, now
-		local step = state.step * math.min(1 + state.streak * wheelAccel.gain, wheelAccel.max)
+		-- steps are offsets; CanvasPosition is in screen pixels, which UIScale stretches
+		local step = state.step * utility:GetScale(frame) * math.min(1 + state.streak * wheelAccel.gain, wheelAccel.max)
 		state.target = math.clamp(state.target, 0, maxScroll(frame)) + direction * step
 		state.moving = true
 		state.hold = 0
@@ -2713,7 +2715,8 @@ do
 					index = index + 1
 					if itemValue(item) == state.selected then
 						local row = math.floor((index - 1) / state.columns)
-						utility:ScrollTo(state.grid.List.Frame, (row - 1) * (state.size + 4), 0.35) -- a row above it shows
+						local frame = state.grid.List.Frame -- a row above it shows; CanvasPosition is in screen pixels
+						utility:ScrollTo(frame, (row - 1) * (state.size + 4) * utility:GetScale(frame), 0.35)
 						break
 					end
 				end
@@ -3071,13 +3074,14 @@ do
 			return
 		end
 
+		-- CanvasPosition is in screen pixels (UIScale included), so everything here is too
 		local container = self.page.container
 		local scale = utility:GetScale(container)
-		local margin = 8
+		local margin = 8 * scale
 		local view = utility:GetScrollTarget(container)
-		local window = container.AbsoluteWindowSize.Y / scale
-		local top = (module.AbsolutePosition.Y - container.AbsolutePosition.Y) / scale + container.CanvasPosition.Y
-		local bottom = top + height + margin
+		local window = container.AbsoluteWindowSize.Y
+		local top = module.AbsolutePosition.Y - container.AbsolutePosition.Y + container.CanvasPosition.Y
+		local bottom = top + height * scale + margin
 
 		if bottom > view + window then
 			utility:ScrollTo(container, math.min(bottom - window, top - margin), 0.35)
