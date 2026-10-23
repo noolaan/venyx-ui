@@ -224,13 +224,60 @@ do
 	-- where the animation is and glide toward the new spot instead (notches stack while it's still moving). Any other
 	-- change (scrollbar drag, a tween, the canvas shrinking under it) is taken as-is. One RenderStepped loop serves
 	-- every registered frame and disconnects once they're all destroyed.
+	-- A frame registered with a `step` reads the wheel itself: each wheel event under the mouse moves it `step`, more
+	-- while the wheel is flicked fast, and whatever Roblox does with the wheel (a big jump, sometimes a frame or two
+	-- late, so short lists skip past what you wanted) is undone.
 	local scrollers = {}
 	local scrollLoop, wheelWatch
-	local wheeled = false -- a wheel notch landed this frame (input is processed before RenderStepped)
+	local wheeled = 0 -- wheel notches that landed this frame (input is processed before RenderStepped)
+	local wheelAccel = {
+		window = 0.06, -- seconds; only a notch this soon after the last one (a fast flick) speeds up
+		gain = 0.35, -- extra steps per notch for each notch in the streak
+		max = 5, -- most steps one notch can move
+		ignore = 0.25, -- seconds after a wheel event that Roblox's own jump is undone
+	}
 
 	-- Furthest CanvasPosition.Y, in offsets (the Absolute sizes include UIScale)
 	local function maxScroll(frame)
 		return math.max(0, (frame.AbsoluteCanvasSize.Y - frame.AbsoluteWindowSize.Y) / utility:GetScale(frame))
+	end
+
+	-- The mouse is over `frame` where it's actually drawn: inside it and every clipping ancestor (a closed dropdown's
+	-- list has no height; a dropdown scrolled off its page is clipped away)
+	local function underMouse(frame)
+		local x, y = mouse.X, mouse.Y
+		local object = frame
+		while object and object:IsA("GuiObject") do
+			if not object.Visible then
+				return false
+			end
+			if object == frame or object.ClipsDescendants or object:IsA("ScrollingFrame") then
+				local position, size = object.AbsolutePosition, object.AbsoluteSize
+				if x < position.X or y < position.Y or x > position.X + size.X or y > position.Y + size.Y then
+					return false
+				end
+			end
+			object = object.Parent
+		end
+		return true
+	end
+
+	local function wheelStepped(state, frame, z, now)
+		local direction = -math.sign(z) -- wheel up (z > 0) scrolls toward the top
+		if direction == 0 then
+			return
+		end
+		if direction == state.direction and now - state.notched < wheelAccel.window then
+			state.streak = state.streak + 1
+		else
+			state.streak = 0
+		end
+		state.direction, state.notched = direction, now
+		local step = state.step * math.min(1 + state.streak * wheelAccel.gain, wheelAccel.max)
+		state.target = math.clamp(state.target, 0, maxScroll(frame)) + direction * step
+		state.moving = true
+		state.hold = 0
+		state.ignoreUntil = now + wheelAccel.ignore
 	end
 
 	local function stepScrollers(dt)
@@ -245,7 +292,11 @@ do
 
 			local y = frame.CanvasPosition.Y
 			if math.abs(y - state.last) > 0.01 then
-				if wheeled then
+				if state.step and now < state.ignoreUntil then
+					-- Roblox's own wheel jump: put it back (the glide below moves it from there)
+					frame.CanvasPosition = Vector2.new(frame.CanvasPosition.X, state.current)
+					state.last = frame.CanvasPosition.Y
+				elseif wheeled > 0 and not state.step then
 					state.target = math.clamp(state.target, 0, maxScroll(frame)) + (y - state.last)
 					state.moving = true
 				else
@@ -269,17 +320,26 @@ do
 			end
 		end
 
-		wheeled = false
+		wheeled = 0
 	end
 
-	function utility:SmoothScroll(frame)
+	-- `step` (offsets per wheel notch) is optional; without it a notch moves as far as Roblox would
+	function utility:SmoothScroll(frame, step)
 		local y = frame.CanvasPosition.Y
-		scrollers[frame] = {current = y, target = y, last = y, hold = 0, moving = false}
+		scrollers[frame] = {current = y, target = y, last = y, hold = 0, moving = false,
+			step = step, direction = 0, notched = 0, streak = 0, ignoreUntil = 0}
 
 		if not scrollLoop then
 			wheelWatch = input.InputChanged:Connect(function(inputObject)
-				if inputObject.UserInputType == Enum.UserInputType.MouseWheel then
-					wheeled = true
+				if inputObject.UserInputType ~= Enum.UserInputType.MouseWheel then
+					return
+				end
+				wheeled = wheeled + 1
+				local now = os.clock()
+				for steppedFrame, state in pairs(scrollers) do
+					if state.step and steppedFrame.Parent and underMouse(steppedFrame) then
+						wheelStepped(state, steppedFrame, inputObject.Position.Z, now)
+					end
 				end
 			end)
 			scrollLoop = run.RenderStepped:Connect(function(dt)
@@ -2311,7 +2371,7 @@ do
 		})
 
 		table.insert(self.modules, dropdown)
-		utility:SmoothScroll(dropdown.List.Frame)
+		utility:SmoothScroll(dropdown.List.Frame, 17) -- half a row per notch
 
 		-- what updateDropdown and setDropdownList need to know about this one
 		local state = {
@@ -2379,7 +2439,467 @@ do
 	function section:addMultiDropdown(title, list, selected, callback)
 		return createDropdown(self, title, list, callback, "multi", selected)
 	end
-	
+
+	-- One hover label per window, following the mouse; `owner` is the cell it's showing for
+	local function showTooltip(library, owner, text)
+		local tooltip = library.tooltip
+		if not tooltip or not tooltip.Parent then
+			tooltip = utility:Create("TextLabel", {
+				Name = "Tooltip",
+				Parent = library.container,
+				AutomaticSize = Enum.AutomaticSize.XY,
+				BackgroundColor3 = themes.DarkContrast,
+				BorderSizePixel = 0,
+				Size = UDim2.new(0, 0, 0, 0),
+				ZIndex = 50,
+				Font = Enum.Font.Gotham,
+				Text = "",
+				TextColor3 = themes.TextColor,
+				TextSize = 12,
+				Visible = false
+			}, {
+				utility:Create("UICorner", {CornerRadius = UDim.new(0, 4)}),
+				utility:Create("UIPadding", {
+					PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6),
+					PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4)
+				})
+			})
+			library.tooltip = tooltip
+		end
+
+		library.tooltipOwner = owner
+		tooltip.Text = text
+		tooltip.Visible = true
+
+		-- below-right of the mouse, flipped left near the screen's right edge
+		local x, y = mouse.X + 14, mouse.Y + 16
+		if x + tooltip.AbsoluteSize.X > library.container.AbsoluteSize.X then
+			x = mouse.X - 8 - tooltip.AbsoluteSize.X
+		end
+		tooltip.Position = UDim2.new(0, x, 0, y)
+	end
+
+	local function hideTooltip(library, owner)
+		if library.tooltip and (owner == nil or library.tooltipOwner == owner) then
+			library.tooltip.Visible = false
+			library.tooltipOwner = nil
+		end
+	end
+
+	-- Pick one of `items` by its picture. Each item is {name = "Iron Helmet", image = "rbxassetid://..." or an id,
+	-- value = anything (defaults to name)}; the name shows on hover and is what the box searches. An item without an
+	-- image shows its name in the cell instead. An item's `inset` (a fraction of the cell, like 0.25) pads its icon. `selected` is the starting pick's value. callback(value, update).
+	-- options: size (cell edge, default 44), rows (rows shown before it scrolls, default 3).
+	local imageGrids = setmetatable({}, {__mode = "k"}) -- grid -> its state
+
+	local function toImage(image)
+		if type(image) == "number" then
+			return "rbxassetid://" .. image
+		end
+		return image or ""
+	end
+
+	local function itemValue(item)
+		if item.value == nil then
+			return item.name
+		end
+		return item.value
+	end
+
+	local function gridItem(state, value)
+		for _, item in ipairs(state.items) do
+			if itemValue(item) == value then
+				return item
+			end
+		end
+	end
+
+	-- Size the open grid to its visible cells (at most state.rows rows, scrolling past that), or close it
+	local function layoutImageGrid(state, quiet)
+		local grid, frame = state.grid, state.grid.List.Frame
+		local cell, pad = state.size, 4
+		local scale = utility:GetScale(frame)
+		local width = frame.AbsoluteSize.X / scale - 6 -- the UIPadding keeps the scrollbar off the cells
+		local columns = math.max(1, math.floor((width + pad) / (cell + pad)))
+
+		local shown = 0
+		for _, button in pairs(state.cells) do
+			if button.Visible then
+				shown = shown + 1
+			end
+		end
+
+		state.columns = columns
+		local rows = math.ceil(shown / columns)
+		local content = math.max(0, rows * (cell + pad) - pad)
+		local window = math.min(rows, state.rows) * (cell + pad) - pad
+		local height = 30
+		if state.open then
+			height = 34 + 8 + math.max(window, 30)
+		end
+
+		frame.CanvasSize = UDim2.new(0, 0, 0, content)
+		frame.ScrollBarImageTransparency = rows > state.rows and 0 or 1
+		grid.List.Empty.Visible = state.open and shown == 0
+
+		if quiet then
+			grid.Size = UDim2.new(1, 0, 0, height)
+		else
+			utility:Tween(grid, {Size = UDim2.new(1, 0, 0, height)}, 0.3)
+		end
+		return height
+	end
+
+	local function setGridLabel(state)
+		local item = gridItem(state, state.selected)
+		local search = state.grid.Search
+		if not search.TextBox:IsFocused() then
+			search.TextBox.Text = item and item.name or state.title
+		end
+		search.Preview.Image = item and toImage(item.image) or ""
+		search.Preview.Visible = item ~= nil and item.image ~= nil
+		search.TextBox.Position = UDim2.new(0, search.Preview.Visible and 34 or 10, 0.5, 1)
+		search.TextBox.Size = UDim2.new(1, search.Preview.Visible and -66 or -42, 1, 0)
+
+		for i, button in pairs(state.cells) do
+			button.Outline.Enabled = itemValue(state.items[i]) == state.selected
+		end
+	end
+
+	local function buildImageGrid(self, state)
+		local frame = state.grid.List.Frame
+		for _, button in pairs(state.cells) do
+			button:Destroy()
+		end
+		state.cells = {}
+
+		for i, item in ipairs(state.items) do
+			local value = itemValue(item)
+			local image = item.image ~= nil
+			-- gap around the icon: item.inset is a fraction of the cell's edge, for icons that fill their whole image
+			local gap = item.inset and math.floor(state.size * item.inset) or (image and 3 or 2)
+			local function placeIcon(icon, hovered)
+				local pad = hovered and math.max(0, gap - 2) or gap
+				icon.Position = UDim2.new(0, pad, 0, pad)
+				icon.Size = UDim2.new(1, -2 * pad, 1, -2 * pad)
+			end
+			local button = utility:Create("ImageButton", {
+				Name = tostring(item.name),
+				Parent = frame,
+				LayoutOrder = i,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				ZIndex = 3,
+				AutoButtonColor = false,
+				Image = "rbxassetid://5028857472",
+				ImageColor3 = themes.DarkContrast,
+				ScaleType = Enum.ScaleType.Slice,
+				SliceCenter = Rect.new(2, 2, 298, 298)
+			}, {
+				utility:Create("UIStroke", {
+					Name = "Outline", -- not "Selected": that's an ImageButton property
+					ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+					Color = themes.TextColor,
+					Thickness = 1.5,
+					Enabled = false
+				}),
+				image and utility:Create("ImageLabel", {
+					Name = "Icon",
+					BackgroundTransparency = 1,
+					Position = UDim2.new(0, 3, 0, 3),
+					Size = UDim2.new(1, -6, 1, -6),
+					ZIndex = 4,
+					Image = toImage(item.image),
+					ScaleType = Enum.ScaleType.Fit
+				}) or utility:Create("TextLabel", {
+					Name = "Icon",
+					BackgroundTransparency = 1,
+					Position = UDim2.new(0, 2, 0, 2),
+					Size = UDim2.new(1, -4, 1, -4),
+					ZIndex = 4,
+					Font = Enum.Font.Gotham,
+					Text = tostring(item.name),
+					TextColor3 = themes.TextColor,
+					TextSize = 10,
+					TextWrapped = true,
+					TextTransparency = 0.1
+				})
+			})
+			state.cells[i] = button
+			placeIcon(button.Icon, false)
+
+			button.MouseEnter:Connect(function()
+				placeIcon(button.Icon, true)
+				showTooltip(self.page.library, button, tostring(item.name))
+			end)
+			button.MouseMoved:Connect(function()
+				showTooltip(self.page.library, button, tostring(item.name))
+			end)
+			button.MouseLeave:Connect(function()
+				placeIcon(button.Icon, false)
+				hideTooltip(self.page.library, button)
+			end)
+
+			button.MouseButton1Click:Connect(function()
+				state.selected = value
+				state.open = false
+				hideTooltip(self.page.library)
+				setGridLabel(state)
+				utility:Pop(state.grid.Search, 10)
+				utility:Tween(state.grid.Search.Button, {Rotation = 0}, 0.3)
+				layoutImageGrid(state)
+
+				if state.callback then
+					state.callback(value, function(...)
+						self:updateImageGrid(state.grid, ...)
+					end)
+				end
+			end)
+		end
+	end
+
+	local function filterImageGrid(state, pattern)
+		pattern = (pattern or ""):lower()
+		for i, item in ipairs(state.items) do
+			local button = state.cells[i]
+			if button then
+				button.Visible = pattern == "" or tostring(item.name):lower():find(pattern, 1, true) ~= nil
+			end
+		end
+	end
+
+	local function openImageGrid(self, state, open)
+		state.open = open
+		utility:Pop(state.grid.Search, 10)
+		utility:Tween(state.grid.Search.Button, {Rotation = open and 180 or 0}, 0.3)
+		if not open then
+			hideTooltip(self.page.library)
+		end
+		if open and not state.built then
+			state.built = true
+			buildImageGrid(self, state)
+			setGridLabel(state)
+		end
+
+		local height = layoutImageGrid(state)
+		if open then
+			state.grid.List.Frame.CanvasPosition = Vector2.new(0, 0)
+			-- start scrolled to the pick, when there is one
+			local index = 0
+			for i, item in ipairs(state.items) do
+				if state.cells[i] and state.cells[i].Visible then
+					index = index + 1
+					if itemValue(item) == state.selected then
+						local row = math.floor((index - 1) / state.columns)
+						utility:ScrollTo(state.grid.List.Frame, (row - 1) * (state.size + 4), 0.35) -- a row above it shows
+						break
+					end
+				end
+			end
+			self:ScrollIntoView(state.grid, height)
+		end
+	end
+
+	function section:addImageGrid(title, items, selected, callback, options)
+		options = options or {}
+		local size = options.size or 44
+
+		local grid = utility:Create("Frame", {
+			Name = "ImageGrid",
+			Parent = self.container,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 30),
+			ClipsDescendants = true
+		}, {
+			utility:Create("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 4)
+			}),
+			utility:Create("ImageLabel", {
+				Name = "Search",
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Size = UDim2.new(1, 0, 0, 30),
+				ZIndex = 2,
+				Image = "rbxassetid://5028857472",
+				ImageColor3 = themes.DarkContrast,
+				ScaleType = Enum.ScaleType.Slice,
+				SliceCenter = Rect.new(2, 2, 298, 298)
+			}, {
+				utility:Create("ImageLabel", {
+					Name = "Preview",
+					BackgroundTransparency = 1,
+					Position = UDim2.new(0, 6, 0.5, -11),
+					Size = UDim2.new(0, 22, 0, 22),
+					ZIndex = 3,
+					ScaleType = Enum.ScaleType.Fit,
+					Visible = false
+				}),
+				utility:Create("TextBox", {
+					Name = "TextBox",
+					AnchorPoint = Vector2.new(0, 0.5),
+					BackgroundTransparency = 1,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					Position = UDim2.new(0, 10, 0.5, 1),
+					Size = UDim2.new(1, -42, 1, 0),
+					ZIndex = 3,
+					Font = Enum.Font.Gotham,
+					Text = title,
+					TextColor3 = themes.TextColor,
+					TextSize = 12,
+					TextTransparency = 0.1,
+					TextXAlignment = Enum.TextXAlignment.Left
+				}),
+				utility:Create("ImageButton", {
+					Name = "Button",
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Position = UDim2.new(1, -28, 0.5, -9),
+					Size = UDim2.new(0, 18, 0, 18),
+					ZIndex = 3,
+					Image = "rbxassetid://5012539403",
+					ImageColor3 = themes.TextColor,
+					SliceCenter = Rect.new(2, 2, 298, 298)
+				})
+			}),
+			utility:Create("ImageLabel", {
+				Name = "List",
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Size = UDim2.new(1, 0, 1, -34),
+				ZIndex = 2,
+				Image = "rbxassetid://5028857472",
+				ImageColor3 = themes.Background,
+				ScaleType = Enum.ScaleType.Slice,
+				SliceCenter = Rect.new(2, 2, 298, 298)
+			}, {
+				utility:Create("ScrollingFrame", {
+					Name = "Frame",
+					Active = true,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Position = UDim2.new(0, 4, 0, 4),
+					Size = UDim2.new(1, -8, 1, -8),
+					CanvasSize = UDim2.new(0, 0, 0, 0),
+					ZIndex = 2,
+					ScrollBarThickness = 3,
+					ScrollBarImageColor3 = themes.DarkContrast
+				}, {
+					utility:Create("UIGridLayout", {
+						SortOrder = Enum.SortOrder.LayoutOrder,
+						CellSize = UDim2.new(0, size, 0, size),
+						CellPadding = UDim2.new(0, 4, 0, 4)
+					}),
+					utility:Create("UIPadding", {
+						PaddingRight = UDim.new(0, 6)
+					})
+				}),
+				utility:Create("TextLabel", {
+					Name = "Empty",
+					BackgroundTransparency = 1,
+					Position = UDim2.new(0, 10, 0, 4),
+					Size = UDim2.new(1, -20, 0, 30),
+					ZIndex = 3,
+					Font = Enum.Font.Gotham,
+					Text = "Nothing found",
+					TextColor3 = themes.TextColor,
+					TextSize = 12,
+					TextTransparency = 0.5,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					Visible = false
+				})
+			})
+		})
+
+		table.insert(self.modules, grid)
+		utility:SmoothScroll(grid.List.Frame, (size + 4) / 2) -- half a row per notch
+
+		local state = {
+			grid = grid,
+			title = title,
+			items = items or {},
+			selected = selected,
+			callback = callback,
+			size = size,
+			rows = options.rows or 3,
+			open = false,
+			built = false,
+			cells = {}
+		}
+		imageGrids[grid] = state
+		setGridLabel(state)
+
+		local search = grid.Search
+		local focused
+
+		search.Button.MouseButton1Click:Connect(function()
+			if not state.open then
+				filterImageGrid(state, "")
+			end
+			openImageGrid(self, state, not state.open)
+		end)
+
+		search.TextBox.Focused:Connect(function()
+			focused = true
+			search.TextBox.Text = ""
+			if not state.open then
+				openImageGrid(self, state, true)
+			end
+		end)
+
+		search.TextBox.FocusLost:Connect(function()
+			focused = false
+			setGridLabel(state) -- the filter stays until it's reopened
+		end)
+
+		search.TextBox:GetPropertyChangedSignal("Text"):Connect(function()
+			if focused and state.built then
+				filterImageGrid(state, search.TextBox.Text)
+				grid.List.Frame.CanvasPosition = Vector2.new(0, 0)
+				layoutImageGrid(state)
+			end
+		end)
+
+		-- the window being resized changes how many cells fit in a row
+		grid.List.Frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if state.open then
+				layoutImageGrid(state, true)
+			end
+		end)
+
+		grid:GetPropertyChangedSignal("Size"):Connect(function()
+			self:Resize()
+		end)
+
+		grid.Destroying:Connect(function()
+			hideTooltip(self.page.library)
+		end)
+
+		return grid
+	end
+
+	-- Set an image grid's pick (a value) without calling its callback, and/or replace its items. Either can be nil.
+	function section:updateImageGrid(grid, selected, items)
+		grid = self:getModule(grid)
+		local state = imageGrids[grid]
+
+		if items then
+			state.items = items
+			if state.built then
+				buildImageGrid(self, state)
+				if state.open then
+					local search = grid.Search.TextBox
+					filterImageGrid(state, search:IsFocused() and search.Text or "")
+				end
+				layoutImageGrid(state, true)
+			end
+		end
+		if selected ~= nil then
+			state.selected = selected
+		end
+		setGridLabel(state)
+	end
+
 	-- class functions
 	
 	function library:SelectPage(page, toggle)
