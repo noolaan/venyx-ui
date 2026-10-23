@@ -2489,7 +2489,8 @@ do
 	-- Pick one of `items` by its picture. Each item is {name = "Iron Helmet", image = "rbxassetid://..." or an id,
 	-- value = anything (defaults to name)}; the name shows on hover and is what the box searches. An item without an
 	-- image shows its name in the cell instead. An item's `inset` (a fraction of the cell, like 0.25) pads its icon. `selected` is the starting pick's value. callback(value, update).
-	-- options: size (cell edge, default 44), rows (rows shown before it scrolls, default 3).
+	-- options: size (cell edge, default 44), rows (rows shown before it scrolls, default 3), prefix (the box reads
+	-- "title: pick" instead of just the pick, for several grids in one section).
 	local imageGrids = setmetatable({}, {__mode = "k"}) -- grid -> its state
 
 	local function toImage(image)
@@ -2554,7 +2555,11 @@ do
 		local item = gridItem(state, state.selected)
 		local search = state.grid.Search
 		if not search.TextBox:IsFocused() then
-			search.TextBox.Text = item and item.name or state.title
+			local name = item and tostring(item.name)
+			if name and state.prefix then
+				name = state.title .. ": " .. name
+			end
+			search.TextBox.Text = name or state.title
 		end
 		search.Preview.Image = item and toImage(item.image) or ""
 		search.Preview.Visible = item ~= nil and item.image ~= nil
@@ -2823,6 +2828,7 @@ do
 			callback = callback,
 			size = size,
 			rows = options.rows or 3,
+			prefix = options.prefix == true,
 			open = false,
 			built = false,
 			cells = {}
