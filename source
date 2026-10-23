@@ -619,7 +619,9 @@ do
 		}, page)
 	end
 	
-	function section.new(page, title)
+	-- `icon` (optional) sits left of the title: an asset id or "rbxassetid://..." string. With `tint` it takes the
+	-- text color, for white line icons; without, it keeps its own colors (an item's picture).
+	function section.new(page, title, icon, tint)
 		local container = utility:Create("ImageLabel", {
 			Name = title,
 			Parent = page.container,
@@ -651,14 +653,28 @@ do
 					TextSize = 12,
 					TextXAlignment = Enum.TextXAlignment.Left,
 					TextTransparency = 1
-				}),
+				}, icon and {
+					utility:Create("UIPadding", {PaddingLeft = UDim.new(0, 22)}),
+					utility:Create("ImageLabel", {
+						Name = "Icon",
+						AnchorPoint = Vector2.new(0, 0.5),
+						BackgroundTransparency = 1,
+						Position = UDim2.new(0, -22, 0.5, 0),
+						Size = UDim2.new(0, 16, 0, 16),
+						ZIndex = 2,
+						Image = type(icon) == "number" and "rbxassetid://" .. icon or tostring(icon),
+						ImageColor3 = tint and themes.TextColor or Color3.new(1, 1, 1),
+						ImageTransparency = 1,
+						ScaleType = Enum.ScaleType.Fit
+					})
+				} or nil),
 				utility:Create("UIListLayout", {
 					SortOrder = Enum.SortOrder.LayoutOrder,
 					Padding = UDim.new(0, 4)
 				})
 			})
 		})
-		
+
 		return setmetatable({
 			page = page,
 			container = container.Container,
@@ -2971,8 +2987,11 @@ do
 			task.wait(0.05)
 			
 			for i, section in pairs(page.sections) do
-			
+
 				utility:Tween(section.container.Title, {TextTransparency = 0}, 0.1)
+				if section.container.Title:FindFirstChild("Icon") then
+					utility:Tween(section.container.Title.Icon, {ImageTransparency = 0}, 0.1)
+				end
 				section:Resize(true)
 				
 				task.wait(0.05)
@@ -2993,6 +3012,9 @@ do
 			for i, section in pairs(page.sections) do	
 				utility:Tween(section.container.Parent, {Size = UDim2.new(1, -10, 0, 28)}, 0.1)
 				utility:Tween(section.container.Title, {TextTransparency = 1}, 0.1)
+				if section.container.Title:FindFirstChild("Icon") then
+					utility:Tween(section.container.Title.Icon, {ImageTransparency = 1}, 0.1)
+				end
 			end
 			
 			task.wait(0.1)
