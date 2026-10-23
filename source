@@ -2599,6 +2599,7 @@ do
 				utility:Create("UIStroke", {
 					Name = "Outline", -- not "Selected": that's an ImageButton property
 					ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+					BorderStrokePosition = Enum.BorderStrokePosition.Inner, -- edge cells would clip an outside stroke
 					Color = themes.TextColor,
 					Thickness = 1.5,
 					Enabled = false
