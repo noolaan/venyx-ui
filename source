@@ -2508,7 +2508,8 @@ do
 	-- value = anything (defaults to name)}; the name shows on hover and is what the box searches. An item without an
 	-- image shows its name in the cell instead. An item's `inset` (a fraction of the cell, like 0.25) pads its icon. `selected` is the starting pick's value. callback(value, update).
 	-- options: size (cell edge, default 44), rows (rows shown before it scrolls, default 3), prefix (the box reads
-	-- "title: pick" instead of just the pick, for several grids in one section).
+	-- "title: pick" instead of just the pick, for several grids in one section), multi (pick any number: `selected`
+	-- is an array of values, a click toggles a cell and leaves the grid open, and callback gets the new array).
 	local imageGrids = setmetatable({}, {__mode = "k"}) -- grid -> its state
 
 	local function toImage(image)
@@ -2531,6 +2532,13 @@ do
 				return item
 			end
 		end
+	end
+
+	local function isPicked(state, value)
+		if state.multi then
+			return table.find(state.selected, value) ~= nil
+		end
+		return value == state.selected
 	end
 
 	-- Size the open grid to its visible cells (at most state.rows rows, scrolling past that), or close it
@@ -2570,13 +2578,25 @@ do
 	end
 
 	local function setGridLabel(state)
-		local item = gridItem(state, state.selected)
-		local search = state.grid.Search
-		if not search.TextBox:IsFocused() then
-			local name = item and tostring(item.name)
+		local item, name
+		if state.multi then
+			-- "title: A, B, C", like a multi dropdown; the preview shows the first pick
+			local names = {}
+			for _, value in ipairs(state.selected) do
+				local picked = gridItem(state, value)
+				item = item or picked
+				table.insert(names, picked and tostring(picked.name) or tostring(value))
+			end
+			name = #names > 0 and state.title .. ": " .. table.concat(names, ", ") or nil
+		else
+			item = gridItem(state, state.selected)
+			name = item and tostring(item.name)
 			if name and state.prefix then
 				name = state.title .. ": " .. name
 			end
+		end
+		local search = state.grid.Search
+		if not search.TextBox:IsFocused() then
 			search.TextBox.Text = name or state.title
 		end
 		search.Preview.Image = item and toImage(item.image) or ""
@@ -2585,7 +2605,7 @@ do
 		search.TextBox.Size = UDim2.new(1, search.Preview.Visible and -66 or -42, 1, 0)
 
 		for i, button in pairs(state.cells) do
-			button.Outline.Enabled = itemValue(state.items[i]) == state.selected
+			button.Outline.Enabled = isPicked(state, itemValue(state.items[i]))
 		end
 	end
 
@@ -2665,6 +2685,21 @@ do
 			end)
 
 			button.MouseButton1Click:Connect(function()
+				if state.multi then
+					local index = table.find(state.selected, value)
+					if index then
+						table.remove(state.selected, index)
+					else
+						table.insert(state.selected, value)
+					end
+					setGridLabel(state)
+					if state.callback then
+						state.callback(table.clone(state.selected), function(...)
+							self:updateImageGrid(state.grid, ...)
+						end)
+					end
+					return
+				end
 				state.selected = value
 				state.open = false
 				hideTooltip(self.page.library)
@@ -2713,7 +2748,7 @@ do
 			for i, item in ipairs(state.items) do
 				if state.cells[i] and state.cells[i].Visible then
 					index = index + 1
-					if itemValue(item) == state.selected then
+					if isPicked(state, itemValue(item)) then
 						local row = math.floor((index - 1) / state.columns)
 						local frame = state.grid.List.Frame -- a row above it shows; CanvasPosition is in screen pixels
 						utility:ScrollTo(frame, (row - 1) * (state.size + 4) * utility:GetScale(frame), 0.35)
@@ -2843,11 +2878,12 @@ do
 			grid = grid,
 			title = title,
 			items = items or {},
-			selected = selected,
+			selected = options.multi and table.clone(selected or {}) or selected,
 			callback = callback,
 			size = size,
 			rows = options.rows or 3,
 			prefix = options.prefix == true,
+			multi = options.multi == true,
 			open = false,
 			built = false,
 			cells = {}
@@ -2904,7 +2940,8 @@ do
 		return grid
 	end
 
-	-- Set an image grid's pick (a value) without calling its callback, and/or replace its items. Either can be nil.
+	-- Set an image grid's pick (a value, or an array for a multi grid) without calling its callback, and/or replace
+	-- its items. Either can be nil.
 	function section:updateImageGrid(grid, selected, items)
 		grid = self:getModule(grid)
 		local state = imageGrids[grid]
@@ -2921,7 +2958,7 @@ do
 			end
 		end
 		if selected ~= nil then
-			state.selected = selected
+			state.selected = state.multi and table.clone(selected) or selected
 		end
 		setGridLabel(state)
 	end
