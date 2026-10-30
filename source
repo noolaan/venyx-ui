@@ -6,6 +6,7 @@ local mouse = player:GetMouse()
 local input = game:GetService("UserInputService")
 local run = game:GetService("RunService")
 local tween = game:GetService("TweenService")
+local textservice = game:GetService("TextService")
 local tweeninfo = TweenInfo.new
 
 -- additional
@@ -685,6 +686,7 @@ do
 			binds = {},
 			dropdowns = {}, -- dropdown -> its state (see createDropdown)
 			sliders = {}, -- slider -> {min, max, step, suffix, value}
+			progress = {}, -- progress bar -> {value, max, percent}
 			toggles = {}, -- toggle -> on/off
 		}, section) 
 	end
@@ -1259,10 +1261,170 @@ do
 		})
 
 		table.insert(self.modules, text);
-		
+
+		-- Grows to fit its text (at least `size` lines), e.g. after updateText. Measured with TextService:
+		-- TextBounds stops at the label's own height.
+		local label = text:FindFirstChildWhichIsA("TextLabel")
+		local function fit()
+			local scale = utility:GetScale(label)
+			local width = label.AbsoluteSize.X / scale
+			if width <= 0 then
+				return
+			end
+			local bounds = textservice:GetTextSize(label.Text, label.TextSize, label.Font, Vector2.new(width, math.huge))
+			local height = math.max(14*size, bounds.Y + 4)
+			if text.Size.Y.Offset ~= height then
+				text.Size = UDim2.new(1, 0, 0, height)
+				self:Resize()
+			end
+		end
+		label:GetPropertyChangedSignal("Text"):Connect(fit)
+		label:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
+
 		return text
 	end
-	
+
+	-- A read-only bar: `title` on the left and the value on the right ("2/10", or "20%" with options.percent), over a
+	-- fill across the whole row. Change it with updateProgress.
+	function section:addProgress(title, value, max, options)
+		options = options or {}
+		local progress = utility:Create("ImageLabel", {
+			Name = "Progress",
+			Parent = self.container,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, 30),
+			ZIndex = 2,
+			Image = "rbxassetid://5028857472",
+			ImageColor3 = themes.DarkContrast,
+			ScaleType = Enum.ScaleType.Slice,
+			SliceCenter = Rect.new(2, 2, 298, 298),
+			ClipsDescendants = true
+		}, {
+			utility:Create("ImageLabel", {
+				Name = "Fill",
+				BackgroundTransparency = 1,
+				Size = UDim2.new(0, 0, 1, 0),
+				ZIndex = 3,
+				Image = "rbxassetid://5028857472",
+				ImageColor3 = themes.TextColor,
+				ImageTransparency = 0.85,
+				ScaleType = Enum.ScaleType.Slice,
+				SliceCenter = Rect.new(2, 2, 298, 298)
+			}),
+			utility:Create("TextLabel", {
+				Name = "Title",
+				AnchorPoint = Vector2.new(0, 0.5),
+				BackgroundTransparency = 1,
+				Position = UDim2.new(0, 10, 0.5, 1),
+				Size = UDim2.new(0.5, -10, 1, 0),
+				ZIndex = 4,
+				Font = Enum.Font.Gotham,
+				Text = title,
+				TextColor3 = themes.TextColor,
+				TextSize = 12,
+				TextTransparency = 0.1,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				TextXAlignment = Enum.TextXAlignment.Left
+			}),
+			utility:Create("TextLabel", {
+				Name = "Value",
+				AnchorPoint = Vector2.new(1, 0.5),
+				BackgroundTransparency = 1,
+				Position = UDim2.new(1, -10, 0.5, 1),
+				Size = UDim2.new(0.5, -10, 1, 0),
+				ZIndex = 4,
+				Font = Enum.Font.GothamSemibold,
+				Text = "",
+				TextColor3 = themes.TextColor,
+				TextSize = 12,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				TextXAlignment = Enum.TextXAlignment.Right
+			})
+		})
+
+		table.insert(self.modules, progress)
+		self.progress[progress] = {value = 0, max = 0, percent = options.percent}
+		self:updateProgress(progress, nil, value or 0, max or 0, true)
+
+		return progress
+	end
+
+	-- Two read-only halves side by side, each with its `title` on the left and `value` on the right (the value takes
+	-- what room the title leaves). Change them with updatePair.
+	function section:addPair(leftTitle, leftValue, rightTitle, rightValue)
+		local function half(name, position, title, value)
+			return utility:Create("ImageLabel", {
+				Name = name,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Position = position,
+				Size = UDim2.new(0.5, -2, 1, 0),
+				ZIndex = 2,
+				Image = "rbxassetid://5028857472",
+				ImageColor3 = themes.DarkContrast,
+				ScaleType = Enum.ScaleType.Slice,
+				SliceCenter = Rect.new(2, 2, 298, 298)
+			}, {
+				utility:Create("UIPadding", {
+					PaddingLeft = UDim.new(0, 10),
+					PaddingRight = UDim.new(0, 10),
+					PaddingTop = UDim.new(0, 1)
+				}),
+				utility:Create("UIListLayout", {
+					FillDirection = Enum.FillDirection.Horizontal,
+					SortOrder = Enum.SortOrder.LayoutOrder,
+					Padding = UDim.new(0, 8)
+				}),
+				utility:Create("TextLabel", {
+					Name = "Title",
+					LayoutOrder = 1,
+					AutomaticSize = Enum.AutomaticSize.X,
+					BackgroundTransparency = 1,
+					Size = UDim2.new(0, 0, 1, 0),
+					ZIndex = 3,
+					Font = Enum.Font.Gotham,
+					Text = title,
+					TextColor3 = themes.TextColor,
+					TextSize = 12,
+					TextTransparency = 0.1,
+					TextXAlignment = Enum.TextXAlignment.Left
+				}),
+				utility:Create("TextLabel", {
+					Name = "Value",
+					LayoutOrder = 2,
+					BackgroundTransparency = 1,
+					Size = UDim2.new(0, 0, 1, 0),
+					ZIndex = 3,
+					Font = Enum.Font.GothamSemibold,
+					Text = tostring(value or ""),
+					TextColor3 = themes.TextColor,
+					TextSize = 12,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					TextXAlignment = Enum.TextXAlignment.Right
+				}, {
+					utility:Create("UIFlexItem", {FlexMode = Enum.UIFlexMode.Fill})
+				})
+			})
+		end
+
+		local pair = utility:Create("Frame", {
+			Name = "Pair",
+			Parent = self.container,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, 30),
+			ZIndex = 2
+		}, {
+			half("Left", UDim2.new(0, 0, 0, 0), leftTitle, leftValue),
+			half("Right", UDim2.new(0.5, 2, 0, 0), rightTitle, rightValue)
+		})
+
+		table.insert(self.modules, pair)
+
+		return pair
+	end
+
 	-- A read-only row: `title` on the left, `value` on the right. Change it with updateStatus.
 	function section:addStatus(title, value)
 		local status = utility:Create("ImageLabel", {
@@ -3195,6 +3357,51 @@ do
 		end
 
 		status.Value.Text = tostring(value)
+	end
+
+	-- nil keeps what it had. instant: no fill animation (building the menu)
+	function section:updateProgress(progress, title, value, max, instant)
+		progress = self:getModule(progress)
+		local state = self.progress[progress]
+
+		if title then
+			progress.Title.Text = title
+		end
+
+		state.value = value or state.value
+		state.max = max or state.max
+		local fraction = state.max > 0 and math.clamp(state.value / state.max, 0, 1) or 0
+		progress.Value.Text = state.percent and math.floor(fraction * 100 + 0.5) .. "%" or state.value .. "/" .. state.max
+
+		local size = UDim2.new(fraction, 0, 1, 0)
+		if instant then
+			progress.Fill.Size = size
+		else
+			utility:Tween(progress.Fill, {Size = size}, 0.2)
+		end
+	end
+
+	-- nil keeps what a side had
+	function section:updatePair(pair, leftValue, rightValue, leftTitle, rightTitle)
+		pair = self:getModule(pair)
+
+		for side, change in pairs({Left = {leftValue, leftTitle}, Right = {rightValue, rightTitle}}) do
+			if change[1] ~= nil then
+				pair[side].Value.Text = tostring(change[1])
+			end
+			if change[2] then
+				pair[side].Title.Text = change[2]
+			end
+		end
+	end
+
+	-- Changes an addText's text; it grows or shrinks to fit
+	function section:updateText(text, value)
+		text = self:getModule(text)
+		local label = text:FindFirstChildWhichIsA("TextLabel")
+
+		label.Name = value
+		label.Text = value
 	end
 
 	function section:updateTextbox(textbox, title, value)
