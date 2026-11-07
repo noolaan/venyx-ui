@@ -3171,6 +3171,9 @@ do
 			end
 			
 			task.wait(0.1)
+			if not self.container.Parent then
+				return
+			end
 			page.container.Visible = true
 			
 			if focusedPage then
@@ -3187,8 +3190,12 @@ do
 			end
 			
 			task.wait(0.05)
-			
+
 			for i, section in pairs(page.sections) do
+				-- the window was destroyed while this waited (the script was re-run mid-animation)
+				if not self.container.Parent then
+					return
+				end
 
 				utility:Tween(section.container.Title, {TextTransparency = 0}, 0.1)
 				if section.container.Title:FindFirstChild("Icon") then
@@ -3198,8 +3205,11 @@ do
 				
 				task.wait(0.05)
 			end
-			
+
 			task.wait(0.05)
+			if not self.container.Parent then
+				return
+			end
 			page:Resize(true)
 		else
 			-- page button
@@ -3220,7 +3230,10 @@ do
 			end
 			
 			task.wait(0.1)
-			
+			if not self.container.Parent then
+				return
+			end
+
 			page.lastPosition = utility:GetScrollTarget(page.container)
 			page:Resize()
 		end
